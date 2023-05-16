@@ -1,7 +1,7 @@
 use wgpu::{
     self, include_wgsl, CommandEncoderDescriptor, PipelineLayoutDescriptor,
-    RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
-    SurfaceConfiguration, SurfaceError, TextureUsages, TextureViewDescriptor,
+    RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor, SurfaceError,
+    TextureViewDescriptor,
 };
 use winit::{event::WindowEvent, window::Window};
 
@@ -17,19 +17,23 @@ pub struct State {
 impl State {
     pub async fn new(window: &Window) -> Self {
         let size = window.inner_size();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
-        let surface = unsafe { instance.create_surface(window) };
+        // # Safety
+        //
+        // The surface needs to live as long as the window that created it.
+        // State owns the window so this should be safe.
+        let surface = unsafe { instance.create_surface(window) }.unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
             .await
             .unwrap();
 
-        log::info!("device features {:?}", adapter.features());
+        tracing::info!("device features {:?}", adapter.features());
 
         let (device, queue) = adapter
             .request_device(
@@ -43,16 +47,12 @@ impl State {
             .await
             .unwrap();
 
-        let config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_preferred_format(&adapter).unwrap(),
-            width: size.width,
-            height: size.height,
-            present_mode: wgpu::PresentMode::Fifo,
-        };
-        surface.configure(&device, &config);
+        let surface_config = surface
+            .get_default_config(&adapter, size.width, size.height)
+            .unwrap();
+        surface.configure(&device, &surface_config);
 
-        let shader = device.create_shader_module(&include_wgsl!("shaders/shader.wgsl"));
+        let shader = device.create_shader_module(include_wgsl!("shaders/shader.wgsl"));
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
@@ -71,11 +71,11 @@ impl State {
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
-                targets: &[wgpu::ColorTargetState {
-                    format: config.format,
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
-                }],
+                })],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -99,7 +99,7 @@ impl State {
             surface,
             device,
             queue,
-            config,
+            config: surface_config,
             size,
             render_pipeline,
         }
@@ -114,10 +114,7 @@ impl State {
         }
     }
 
-    pub fn input(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            _ => {}
-        }
+    pub fn input(&mut self, _event: &WindowEvent) -> bool {
         false
     }
 
@@ -137,7 +134,7 @@ impl State {
         {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("Render Pass"),
-                color_attachments: &[RenderPassColorAttachment {
+                color_attachments: &[Some(RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -149,7 +146,7 @@ impl State {
                         }),
                         store: true,
                     },
-                }],
+                })],
                 depth_stencil_attachment: None,
             });
 

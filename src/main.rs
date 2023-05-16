@@ -10,15 +10,14 @@ use winit::{
 use state::State;
 
 fn main() {
+    tracing_subscriber::fmt::init();
     pollster::block_on(run());
 }
 
 async fn run() {
-    env_logger::init();
-
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("ray tracing in rust".to_owned())
+        .with_title("rust-wgpu".to_owned())
         .build(&event_loop)
         .unwrap();
 
@@ -60,7 +59,7 @@ async fn run() {
                     Ok(_) => {}
                     Err(SurfaceError::Lost) => state.resize(state.size),
                     Err(SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-                    Err(e) => log::error!("{:?}", e),
+                    Err(e) => tracing::error!("{:?}", e),
                 }
             }
             _ => {}
