@@ -1,4 +1,5 @@
 pub mod state;
+pub mod texture;
 
 use wgpu::SurfaceError;
 use winit::{
