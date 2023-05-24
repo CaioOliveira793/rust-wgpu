@@ -1,3 +1,5 @@
+pub mod camera;
+pub mod renderer;
 pub mod state;
 pub mod texture;
 
@@ -17,16 +19,29 @@ pub async fn run() {
         .build(&event_loop)
         .unwrap();
 
-    let mut state = State::new(&window).await;
+    let mut state = State::new(window).await;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        *control_flow = ControlFlow::Poll;
+
+        match event {
+            Event::DeviceEvent { ref event, .. } => {
+                tracing::info!("device event {:?}", event);
+            }
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput { input, .. },
+                ..
+            } => {
+                tracing::info!("keyboard event {:?}", input);
+            }
+            _ => {}
+        }
 
         match event {
             Event::WindowEvent {
                 ref event,
                 window_id,
-            } if window_id == window.id() => {
+            } if window_id == state.window.id() => {
                 if !state.input(event) {
                     match event {
                         WindowEvent::Resized(physical_size) => {
@@ -49,7 +64,10 @@ pub async fn run() {
                     }
                 }
             }
-            Event::RedrawRequested(window_id) if window_id == window.id() => {
+            Event::MainEventsCleared => {
+                state.window.request_redraw();
+            }
+            Event::RedrawRequested(window_id) if window_id == state.window.id() => {
                 state.update();
                 match state.render() {
                     Ok(_) => {}

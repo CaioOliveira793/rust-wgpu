@@ -1,4 +1,8 @@
-use crate::texture;
+use crate::{
+    camera,
+    renderer::{IndexBuffer, VertexBuffer},
+    texture,
+};
 use wgpu::{
     self, include_wgsl, util::DeviceExt, CommandEncoderDescriptor, PipelineLayoutDescriptor,
     RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor, SurfaceError,
@@ -27,53 +31,52 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x2, // NEW!
+                    format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         }
     }
 }
 
-const PENTAGON_VERTICES: &[Vertex] = &[
+const QUAD_VERTICES: &[Vertex] = &[
     Vertex {
-        position: [-0.0868241, 0.49240386, 0.0],
-        texture_coord: [0.4131759, 0.00759614],
-    }, // A
+        position: [-0.5, -0.5, 0.0],
+        texture_coord: [0.0, 0.0],
+    },
     Vertex {
-        position: [-0.49513406, 0.06958647, 0.0],
-        texture_coord: [0.0048659444, 0.43041354],
-    }, // B
+        position: [0.5, -0.5, 0.0],
+        texture_coord: [1.0, 0.0],
+    },
     Vertex {
-        position: [-0.21918549, -0.44939706, 0.0],
-        texture_coord: [0.28081453, 0.949397],
-    }, // C
+        position: [0.5, 0.5, 0.0],
+        texture_coord: [1.0, 1.0],
+    },
     Vertex {
-        position: [0.35966998, -0.3473291, 0.0],
-        texture_coord: [0.85967, 0.84732914],
-    }, // D
-    Vertex {
-        position: [0.44147372, 0.2347359, 0.0],
-        texture_coord: [0.9414737, 0.2652641],
-    }, // E
+        position: [-0.5, 0.5, 0.0],
+        texture_coord: [0.0, 1.0],
+    },
 ];
 
-const PENTAGON_INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
+const QUAD_INDICES: &[u16] = &[0, 1, 2, 3, 0, 2];
 
 pub struct State {
+    pub window: Window,
     surface: wgpu::Surface,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
+    camera: camera::Camera,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    index_count: u32,
+    vertex_buffer: VertexBuffer,
+    index_buffer: IndexBuffer,
     diffuse_bind_group: wgpu::BindGroup,
 }
 
 impl State {
-    pub async fn new(window: &Window) -> Self {
+    pub async fn new(window: Window) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
@@ -81,7 +84,7 @@ impl State {
         //
         // The surface needs to live as long as the window that created it.
         // State owns the window so this should be safe.
-        let surface = unsafe { instance.create_surface(window) }.unwrap();
+        let surface = unsafe { instance.create_surface(&window) }.unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -105,23 +108,20 @@ impl State {
             .await
             .unwrap();
 
-        let surface_config = surface
+        let config = surface
             .get_default_config(&adapter, size.width, size.height)
             .unwrap();
-        surface.configure(&device, &surface_config);
+        surface.configure(&device, &config);
 
         let shader = device.create_shader_module(include_wgsl!("asset/shader/basic_shape.wgsl"));
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(PENTAGON_VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(PENTAGON_INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let vertex_buffer = VertexBuffer::init_immediate(
+            &device,
+            bytemuck::cast_slice(QUAD_VERTICES),
+            Some("Vertex Buffer"),
+        );
+        let index_buffer =
+            IndexBuffer::init_immediate_u16(&device, QUAD_INDICES, Some("Index Buffer"));
 
         let img_texture = image::RgbaImage::from_raw(1, 1, vec![234, 65, 123, 255]).unwrap();
         let diffuse_texture = texture::Texture::from_image(
@@ -169,9 +169,49 @@ impl State {
             label: Some("diffuse_bind_group"),
         });
 
+        let camera = camera::Camera {
+            eye: (0.0, 1.0, 2.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: glam::Vec3::Y,
+            aspect: config.width as f32 / config.height as f32,
+            fov_y: 45.0 * std::f32::consts::PI / 180f32,
+            z_near: 0.1,
+            z_far: 100.0,
+        };
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera.view_projection_matrix()]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
+        });
+
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&texture_bind_group_layout],
+            bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -187,7 +227,7 @@ impl State {
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_config.format,
+                    format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -211,15 +251,18 @@ impl State {
         });
 
         Self {
+            window,
             surface,
             device,
             queue,
-            config: surface_config,
+            config,
             size,
+            camera,
+            camera_buffer,
+            camera_bind_group,
             render_pipeline,
             vertex_buffer,
             index_buffer,
-            index_count: PENTAGON_INDICES.len() as u32,
             diffuse_bind_group,
         }
     }
@@ -233,11 +276,18 @@ impl State {
         }
     }
 
-    pub fn input(&mut self, _event: &WindowEvent) -> bool {
-        false
+    pub fn input(&mut self, event: &WindowEvent) -> bool {
+        let camera_controller = camera::CameraController::new(0.2);
+        camera_controller.process_events(&mut self.camera, event)
     }
 
-    pub fn update(&mut self) {}
+    pub fn update(&mut self) {
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera.view_projection_matrix()]),
+        );
+    }
 
     pub fn render(&mut self) -> Result<(), SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -271,9 +321,13 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.buffer().slice(..));
+            render_pass.set_index_buffer(
+                self.index_buffer.buffer().slice(..),
+                self.index_buffer.format(),
+            );
+            render_pass.draw_indexed(0..self.index_buffer.count(), 0, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

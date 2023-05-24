@@ -18,6 +18,7 @@ winit = { version = "0.28", features = ["wayland"] }
 wgpu = "0.16"
 pollster = "0.2"
 bytemuck = { version = "1.13", features = ["derive"] }
+glam = { version = "0.24", features = ["bytemuck"] }
 image = { version = "0.24", default-features = false, features = ["png"] }
 
 tracing = "0.1"
