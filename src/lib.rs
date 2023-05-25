@@ -2,6 +2,7 @@ pub mod camera;
 pub mod renderer;
 pub mod state;
 pub mod texture;
+pub mod util;
 
 use wgpu::SurfaceError;
 use winit::{
@@ -22,20 +23,7 @@ pub async fn run() {
     let mut state = State::new(window).await;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Poll;
-
-        match event {
-            Event::DeviceEvent { ref event, .. } => {
-                tracing::info!("device event {:?}", event);
-            }
-            Event::WindowEvent {
-                event: WindowEvent::KeyboardInput { input, .. },
-                ..
-            } => {
-                tracing::info!("keyboard event {:?}", input);
-            }
-            _ => {}
-        }
+        *control_flow = ControlFlow::Wait;
 
         match event {
             Event::WindowEvent {

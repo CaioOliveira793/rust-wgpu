@@ -1,5 +1,5 @@
 use crate::{
-    camera,
+    camera::{Camera, CameraController},
     renderer::{IndexBuffer, VertexBuffer},
     texture,
 };
@@ -66,7 +66,7 @@ pub struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
-    camera: camera::Camera,
+    camera: Camera,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
@@ -169,19 +169,11 @@ impl State {
             label: Some("diffuse_bind_group"),
         });
 
-        let camera = camera::Camera {
-            eye: (0.0, 1.0, 2.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
-            up: glam::Vec3::Y,
-            aspect: config.width as f32 / config.height as f32,
-            fov_y: 45.0 * std::f32::consts::PI / 180f32,
-            z_near: 0.1,
-            z_far: 100.0,
-        };
+        let camera = Camera::default();
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[camera.view_projection_matrix()]),
+            contents: bytemuck::cast_slice(&[camera.view_projection()]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -273,19 +265,20 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            self.camera.projection.aspect_ratio = new_size.width as f32 / new_size.height as f32;
         }
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        let camera_controller = camera::CameraController::new(0.2);
-        camera_controller.process_events(&mut self.camera, event)
+        let camera_controller = CameraController::new(0.2);
+        camera_controller.process_events(&mut self.camera, event, 1.0)
     }
 
     pub fn update(&mut self) {
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
-            bytemuck::cast_slice(&[self.camera.view_projection_matrix()]),
+            bytemuck::cast_slice(&[self.camera.view_projection()]),
         );
     }
 
