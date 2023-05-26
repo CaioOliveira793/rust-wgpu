@@ -1,4 +1,4 @@
-use image::GenericImageView;
+use image::{ImageBuffer, Rgba};
 
 pub struct Texture {
     pub texture: wgpu::Texture,
@@ -7,28 +7,17 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub fn from_bytes(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bytes: &[u8],
-        label: &str,
-    ) -> Result<Self, image::ImageError> {
-        let img = image::load_from_memory(bytes)?;
-        Ok(Self::from_image(device, queue, &img, Some(label)))
-    }
-
     pub fn from_image(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        img: &image::DynamicImage,
+        buf: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+        width: u32,
+        height: u32,
         label: Option<&str>,
     ) -> Self {
-        let rgba = img.to_rgba8();
-        let dimensions = img.dimensions();
-
         let size = wgpu::Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
+            width,
+            height,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -49,11 +38,11 @@ impl Texture {
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
-            &rgba,
+            &buf,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * dimensions.0),
-                rows_per_image: Some(dimensions.1),
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
             },
             size,
         );
@@ -74,5 +63,34 @@ impl Texture {
             view,
             sampler,
         }
+    }
+
+    pub fn update_data(
+        &self,
+        queue: &wgpu::Queue,
+        buf: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+        width: u32,
+        height: u32,
+    ) {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                aspect: wgpu::TextureAspect::All,
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+            },
+            &buf,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            size,
+        );
     }
 }

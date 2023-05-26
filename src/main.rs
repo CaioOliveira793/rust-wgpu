@@ -1,3 +1,4 @@
+use image::{Rgba, RgbaImage};
 use rust_wgpu_lib::{
     application::{AppState, Application, Layer, Screen},
     camera::{Camera, CameraController},
@@ -9,7 +10,10 @@ use wgpu::{
     RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
     TextureViewDescriptor,
 };
-use winit::{dpi::PhysicalSize, event::Event};
+use winit::{
+    dpi::PhysicalSize,
+    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
+};
 
 struct RayTracingCPU {
     camera: Camera,
@@ -19,7 +23,29 @@ struct RayTracingCPU {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: VertexBuffer,
     index_buffer: IndexBuffer,
+    texture: Texture,
+    img_texture: RgbaImage,
     diffuse_bind_group: wgpu::BindGroup,
+}
+
+fn create_target_texture(screen: &Screen) -> (RgbaImage, Texture) {
+    let mut img_data = Vec::with_capacity((IMG_WIDTH * IMG_HEIGHT * 4) as usize);
+    for _ in 0..(IMG_WIDTH * IMG_HEIGHT) {
+        for i in [234, 65, 123, 255] {
+            img_data.push(i);
+        }
+    }
+
+    let img_texture = image::RgbaImage::from_raw(IMG_WIDTH, IMG_HEIGHT, img_data).unwrap();
+    let texture = Texture::from_image(
+        &screen.device,
+        &screen.queue,
+        &img_texture,
+        IMG_WIDTH,
+        IMG_HEIGHT,
+        Some("Target texture"),
+    );
+    (img_texture, texture)
 }
 
 impl Layer for RayTracingCPU {
@@ -38,13 +64,7 @@ impl Layer for RayTracingCPU {
         let index_buffer =
             IndexBuffer::init_immediate_u16(&screen.device, QUAD_INDICES, Some("Index Buffer"));
 
-        let img_texture = image::RgbaImage::from_raw(1, 1, vec![234, 65, 123, 255]).unwrap();
-        let diffuse_texture = Texture::from_image(
-            &screen.device,
-            &screen.queue,
-            &image::DynamicImage::ImageRgba8(img_texture),
-            Some("Solid pink texture"),
-        );
+        let (img_texture, texture) = create_target_texture(screen);
 
         let texture_bind_group_layout =
             screen
@@ -76,11 +96,11 @@ impl Layer for RayTracingCPU {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    resource: wgpu::BindingResource::TextureView(&texture.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    resource: wgpu::BindingResource::Sampler(&texture.sampler),
                 },
             ],
             label: Some("diffuse_bind_group"),
@@ -176,6 +196,8 @@ impl Layer for RayTracingCPU {
             render_pipeline,
             vertex_buffer,
             index_buffer,
+            texture,
+            img_texture,
             diffuse_bind_group,
         }
     }
@@ -184,11 +206,25 @@ impl Layer for RayTracingCPU {
         self.camera.projection.aspect_ratio = new_size.width as f32 / new_size.height as f32;
     }
 
-    fn process_event(&mut self, event: &Event<()>, _screen: &mut Screen) {
+    fn process_event(&mut self, event: &Event<()>, screen: &mut Screen) {
         match event {
             Event::WindowEvent { ref event, .. } => {
                 self.camera_controller
                     .process_events(&mut self.camera, event, 1.0);
+                match event {
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Pressed,
+                                virtual_keycode: Some(VirtualKeyCode::F5),
+                                ..
+                            },
+                        ..
+                    } => {
+                        render_to_texture(&mut self.img_texture, &self.texture, &screen.queue);
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -253,6 +289,48 @@ impl Layer for RayTracingCPU {
         tracing::info!("exiting");
         Ok(())
     }
+}
+
+const IMG_WIDTH: u32 = 800;
+const IMG_HEIGHT: u32 = 800;
+
+fn render_to_texture(img: &mut RgbaImage, texture: &Texture, queue: &wgpu::Queue) {
+    for y in 0..IMG_HEIGHT {
+        for x in 0..IMG_WIDTH {
+            let coord = glam::Vec2::new(x as f32 / IMG_WIDTH as f32, y as f32 / IMG_HEIGHT as f32)
+                * 2.0
+                - 1.0;
+            let pixel = fragment_shader(coord);
+            img.put_pixel(x, y, Rgba(pixel));
+        }
+    }
+
+    texture.update_data(queue, &img, IMG_WIDTH, IMG_HEIGHT);
+}
+
+fn fragment_shader(coord: glam::Vec2) -> [u8; 4] {
+    // (bx^2 + by^2 + bz^2)t^2 + (2(axbx + ayby + azbz))t + (ax^2 + ay^2 + az^2 - r^2) = 0
+    // where
+    // a = ray origin
+    // b = ray direction
+    // r = radius
+    // t = hit distance
+
+    let ray_origin = glam::Vec3::new(0.0, 0.0, 2.0);
+    let ray_direction = glam::Vec3::new(coord.x, coord.y, -1.0);
+    let radius = 0.5;
+
+    let a = ray_direction.dot(ray_direction);
+    let b = 2.0 * ray_origin.dot(ray_direction);
+    let c = ray_origin.dot(ray_origin) - radius * radius;
+
+    let discriminant = b * b - 4.0 * a * c;
+
+    if discriminant >= 0.0 {
+        return [255, 0, 255, 255];
+    }
+
+    [0, 0, 0, 255]
 }
 
 fn main() {
