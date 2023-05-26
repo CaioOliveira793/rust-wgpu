@@ -300,21 +300,33 @@ fn render_to_texture(img: &mut RgbaImage, texture: &Texture, queue: &wgpu::Queue
             let coord = glam::Vec2::new(x as f32 / IMG_WIDTH as f32, y as f32 / IMG_HEIGHT as f32)
                 * 2.0
                 - 1.0;
-            let pixel = fragment_shader(coord);
-            img.put_pixel(x, y, Rgba(pixel));
+            let color = fragment_shader(coord);
+            img.put_pixel(x, y, Rgba(convert_rgba(color)));
         }
     }
 
     texture.update_data(queue, &img, IMG_WIDTH, IMG_HEIGHT);
 }
 
-fn fragment_shader(coord: glam::Vec2) -> [u8; 4] {
+fn convert_rgba(color: glam::Vec4) -> [u8; 4] {
+    let r = (color.x * 255.0) as u8;
+    let g = (color.y * 255.0) as u8;
+    let b = (color.z * 255.0) as u8;
+    let a = (color.w * 255.0) as u8;
+    [r, g, b, a]
+}
+
+fn fragment_shader(coord: glam::Vec2) -> glam::Vec4 {
     // (bx^2 + by^2 + bz^2)t^2 + (2(axbx + ayby + azbz))t + (ax^2 + ay^2 + az^2 - r^2) = 0
     // where
     // a = ray origin
     // b = ray direction
     // r = radius
     // t = hit distance
+
+    let clear_color = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+    let mut sphere_color = glam::Vec4::new(1.0, 0.0, 1.0, 1.0);
+    let light_direction = glam::Vec3::new(-1.0, -1.0, -1.0).normalize();
 
     let ray_origin = glam::Vec3::new(0.0, 0.0, 2.0);
     let ray_direction = glam::Vec3::new(coord.x, coord.y, -1.0);
@@ -324,13 +336,24 @@ fn fragment_shader(coord: glam::Vec2) -> [u8; 4] {
     let b = 2.0 * ray_origin.dot(ray_direction);
     let c = ray_origin.dot(ray_origin) - radius * radius;
 
+    // Quadratic formula discriminant
+    // b^2  - 4ac
     let discriminant = b * b - 4.0 * a * c;
 
-    if discriminant >= 0.0 {
-        return [255, 0, 255, 255];
+    if discriminant < 0.0 {
+        return clear_color;
     }
 
-    [0, 0, 0, 255]
+    // (-b +- sqrt(discriminant)) / 2a
+    let closest_t = (-b - discriminant.sqrt()) / (2.0 * a);
+
+    let hit_point = ray_origin + ray_direction * closest_t;
+    let normal = hit_point.normalize();
+
+    let intensity = normal.dot(-light_direction).max(0.0); // == cos(angle)
+
+    sphere_color = sphere_color * intensity;
+    return glam::Vec4::new(sphere_color.x, sphere_color.y, sphere_color.z, 1.0);
 }
 
 fn main() {
