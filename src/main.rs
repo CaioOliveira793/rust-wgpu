@@ -1,19 +1,22 @@
+use glam::*;
 use image::{Rgba, RgbaImage};
+use ray::Ray;
 use rust_wgpu_lib::{
     application::{AppState, Application, Layer, Screen},
     camera::{Camera, CameraController},
     renderer::{IndexBuffer, Vertex, VertexBuffer, QUAD_INDICES, QUAD_VERTICES},
     texture::Texture,
 };
+use scene::{Scene, Sphere};
 use wgpu::{
     include_wgsl, util::DeviceExt, CommandEncoderDescriptor, PipelineLayoutDescriptor,
     RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
     TextureViewDescriptor,
 };
-use winit::{
-    dpi::PhysicalSize,
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-};
+use winit::{dpi::PhysicalSize, event::Event};
+
+mod ray;
+mod scene;
 
 struct RayTracingCPU {
     camera: Camera,
@@ -25,6 +28,7 @@ struct RayTracingCPU {
     index_buffer: IndexBuffer,
     texture: Texture,
     img_texture: RgbaImage,
+    scene: Scene,
     diffuse_bind_group: wgpu::BindGroup,
 }
 
@@ -188,6 +192,21 @@ impl Layer for RayTracingCPU {
                 multiview: None,
             });
 
+        let scene = Scene {
+            spheres: vec![
+                Sphere {
+                    albedo: Vec3::new(1.0, 0.0, 1.0),
+                    radius: 0.5,
+                    position: Vec3::ZERO,
+                },
+                Sphere {
+                    albedo: Vec3::new(0.2, 0.3, 1.0),
+                    radius: 1.5,
+                    position: Vec3::new(1.0, 0.0, -5.0),
+                },
+            ],
+        };
+
         Self {
             camera,
             camera_controller: CameraController::new(0.2),
@@ -198,6 +217,7 @@ impl Layer for RayTracingCPU {
             index_buffer,
             texture,
             img_texture,
+            scene,
             diffuse_bind_group,
         }
     }
@@ -206,25 +226,11 @@ impl Layer for RayTracingCPU {
         self.camera.projection.aspect_ratio = new_size.width as f32 / new_size.height as f32;
     }
 
-    fn process_event(&mut self, event: &Event<()>, screen: &mut Screen) {
+    fn process_event(&mut self, event: &Event<()>, _screen: &mut Screen) {
         match event {
             Event::WindowEvent { ref event, .. } => {
                 self.camera_controller
                     .process_events(&mut self.camera, event, 1.0);
-                match event {
-                    WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                state: ElementState::Pressed,
-                                virtual_keycode: Some(VirtualKeyCode::F5),
-                                ..
-                            },
-                        ..
-                    } => {
-                        render_to_texture(&mut self.img_texture, &self.texture, &screen.queue);
-                    }
-                    _ => {}
-                }
             }
             _ => {}
         }
@@ -235,6 +241,13 @@ impl Layer for RayTracingCPU {
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[self.camera.view_projection()]),
+        );
+
+        render_to_texture(
+            &mut self.img_texture,
+            &self.texture,
+            &mut self.scene,
+            &screen.queue,
         );
     }
 
@@ -294,13 +307,18 @@ impl Layer for RayTracingCPU {
 const IMG_WIDTH: u32 = 800;
 const IMG_HEIGHT: u32 = 800;
 
-fn render_to_texture(img: &mut RgbaImage, texture: &Texture, queue: &wgpu::Queue) {
+fn render_to_texture(img: &mut RgbaImage, texture: &Texture, scene: &Scene, queue: &wgpu::Queue) {
+    let mut ray = Ray {
+        origin: glam::Vec3::new(0.0, 0.0, 2.0),
+        direction: glam::Vec3::ZERO,
+    };
     for y in 0..IMG_HEIGHT {
         for x in 0..IMG_WIDTH {
             let coord = glam::Vec2::new(x as f32 / IMG_WIDTH as f32, y as f32 / IMG_HEIGHT as f32)
                 * 2.0
                 - 1.0;
-            let color = fragment_shader(coord);
+            ray.direction = glam::Vec3::new(coord.x, coord.y, -1.0);
+            let color = cast_ray(scene, &ray);
             img.put_pixel(x, y, Rgba(convert_rgba(color)));
         }
     }
@@ -316,7 +334,7 @@ fn convert_rgba(color: glam::Vec4) -> [u8; 4] {
     [r, g, b, a]
 }
 
-fn fragment_shader(coord: glam::Vec2) -> glam::Vec4 {
+fn cast_ray(scene: &Scene, ray: &Ray) -> glam::Vec4 {
     // (bx^2 + by^2 + bz^2)t^2 + (2(axbx + ayby + azbz))t + (ax^2 + ay^2 + az^2 - r^2) = 0
     // where
     // a = ray origin
@@ -325,34 +343,48 @@ fn fragment_shader(coord: glam::Vec2) -> glam::Vec4 {
     // t = hit distance
 
     let clear_color = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
-    let mut sphere_color = glam::Vec4::new(1.0, 0.0, 1.0, 1.0);
     let light_direction = glam::Vec3::new(-1.0, -1.0, -1.0).normalize();
 
-    let ray_origin = glam::Vec3::new(0.0, 0.0, 2.0);
-    let ray_direction = glam::Vec3::new(coord.x, coord.y, -1.0);
-    let radius = 0.5;
-
-    let a = ray_direction.dot(ray_direction);
-    let b = 2.0 * ray_origin.dot(ray_direction);
-    let c = ray_origin.dot(ray_origin) - radius * radius;
-
-    // Quadratic formula discriminant
-    // b^2  - 4ac
-    let discriminant = b * b - 4.0 * a * c;
-
-    if discriminant < 0.0 {
+    if scene.spheres.is_empty() {
         return clear_color;
     }
 
-    // (-b +- sqrt(discriminant)) / 2a
-    let closest_t = (-b - discriminant.sqrt()) / (2.0 * a);
+    let mut closest_sphere: Option<&Sphere> = None;
+    let mut hit_distance = std::f32::MAX;
 
-    let hit_point = ray_origin + ray_direction * closest_t;
+    for sphere in &scene.spheres {
+        let origin = ray.origin - sphere.position;
+
+        let a = glam::Vec3::dot(ray.direction, ray.direction);
+        let b = 2.0 * glam::Vec3::dot(origin, ray.direction);
+        let c = glam::Vec3::dot(origin, origin) - sphere.radius * sphere.radius;
+
+        let discriminant = b * b - 4.0 * a * c;
+        if discriminant < 0.0 {
+            continue;
+        }
+
+        let closest_t = (-b - discriminant.sqrt()) / (2.0 * a);
+
+        if closest_t < hit_distance {
+            hit_distance = closest_t;
+            closest_sphere = Some(&sphere);
+        }
+    }
+
+    if closest_sphere.is_none() {
+        return clear_color;
+    }
+
+    let sphere = closest_sphere.unwrap();
+
+    let origin = ray.origin - sphere.position;
+    let hit_point = origin + ray.direction * hit_distance;
     let normal = hit_point.normalize();
 
     let intensity = normal.dot(-light_direction).max(0.0); // == cos(angle)
 
-    sphere_color = sphere_color * intensity;
+    let sphere_color = sphere.albedo * intensity;
     return glam::Vec4::new(sphere_color.x, sphere_color.y, sphere_color.z, 1.0);
 }
 
